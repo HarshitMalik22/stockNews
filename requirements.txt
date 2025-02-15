@@ -2,6 +2,6 @@ streamlit==1.42.0
 transformers==4.34.0
 beautifulsoup4==4.12.2
 requests==2.31.0
-torch==2.0.1
+torch==2.2.2
 lxml==4.9.2
 sentencepiece==0.1.97
