@@ -8,10 +8,12 @@ import time
 from requests.exceptions import RequestException
 import torch
 import asyncio
-import aiohttp
+import httpx  
 
 # Configuration
-HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                         'AppleWebKit/537.36 (KHTML, like Gecko) '
+                         'Chrome/91.0.4472.124 Safari/537.36'}
 TIMEOUT = 10
 MAX_RETRIES = 2
 
@@ -51,17 +53,18 @@ def load_models():
 
 tokenizer, model, sentiment = load_models()
 
-async def fetch_url(session, url):
+# Async functions using httpx
+async def fetch_url(client, url):
     try:
-        async with session.get(url, timeout=TIMEOUT, headers=HEADERS) as response:
-            return await response.text()
+        response = await client.get(url, timeout=TIMEOUT, headers=HEADERS)
+        return response.text
     except Exception as e:
         st.error(f"Error fetching {url}: {str(e)}")
         return None
 
 async def scrape_articles(urls):
-    async with aiohttp.ClientSession() as session:
-        tasks = [fetch_url(session, url) for url in urls]
+    async with httpx.AsyncClient() as client:
+        tasks = [fetch_url(client, url) for url in urls]
         return await asyncio.gather(*tasks)
 
 def clean_article_text(text):
@@ -123,10 +126,9 @@ if analyze_button:
     urls, articles, summaries, scores = analyze_news(ticker)
     
     if not summaries:
-        st.warning("No articles found or error occurred. Try different ticker or check network.")
+        st.warning("No articles found or error occurred. Try a different ticker or check network.")
         st.stop()
 
-    # Display results
     st.success(f"Analyzed {len(summaries)} articles for {ticker}")
     
     # Create download data
@@ -153,7 +155,7 @@ if analyze_button:
     # Download button
     st.download_button(
         label="Download Results as CSV",
-        data='\n'.join([','.join(map(str,row)) for row in csv_data]),
+        data='\n'.join([','.join(map(str, row)) for row in csv_data]),
         file_name=f'{ticker}_news_analysis.csv',
         mime='text/csv'
     )
