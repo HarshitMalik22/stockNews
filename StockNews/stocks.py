@@ -4,6 +4,16 @@ from bs4 import BeautifulSoup
 import requests
 import re
 import csv
+import time
+from requests.exceptions import RequestException
+import torch
+import asyncio
+import aiohttp
+
+# Configuration
+HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+TIMEOUT = 10
+MAX_RETRIES = 2
 
 # Set up page config
 st.set_page_config(page_title="Stock News Analyzer", layout="wide")
@@ -14,7 +24,7 @@ st.markdown("""
 This app analyzes financial news for selected stocks using:
 - **Pegasus** for summarization
 - **Sentiment Analysis** pipeline
-- Web scraping from Google/Yahoo News
+- Optimized web scraping
 """)
 
 # Sidebar controls
@@ -27,80 +37,106 @@ with st.sidebar:
 # Load models with caching
 @st.cache_resource
 def load_models():
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model_name = "human-centered-summarization/financial-summarization-pegasus"
+    
     tokenizer = PegasusTokenizer.from_pretrained(model_name)
-    model = PegasusForConditionalGeneration.from_pretrained(model_name)
-    sentiment_pipeline = pipeline("sentiment-analysis")
+    model = PegasusForConditionalGeneration.from_pretrained(model_name).to(device)
+    sentiment_pipeline = pipeline(
+        "sentiment-analysis",
+        model="distilbert-base-uncased-finetuned-sst-2-english",
+        device=0 if torch.cuda.is_available() else -1
+    )
     return tokenizer, model, sentiment_pipeline
 
 tokenizer, model, sentiment = load_models()
 
-# Main processing function
+async def fetch_url(session, url):
+    try:
+        async with session.get(url, timeout=TIMEOUT, headers=HEADERS) as response:
+            return await response.text()
+    except Exception as e:
+        st.error(f"Error fetching {url}: {str(e)}")
+        return None
+
+async def scrape_articles(urls):
+    async with aiohttp.ClientSession() as session:
+        tasks = [fetch_url(session, url) for url in urls]
+        return await asyncio.gather(*tasks)
+
+def clean_article_text(text):
+    soup = BeautifulSoup(text, 'html.parser')
+    paragraphs = soup.find_all('p')
+    text = ' '.join([p.get_text(strip=True) for p in paragraphs])
+    return ' '.join(text.split()[:350])  # Limit to 350 words
+
 def analyze_news(ticker):
-    # Search for news links
     with st.status(f"Searching news for {ticker}..."):
-        search_url = f'https://www.google.com/search?q=yahoo+finance+{ticker}&tbm=nws'
-        r = requests.get(search_url)
-        soup = BeautifulSoup(r.text, 'html.parser')
-        atags = soup.find_all('a')
-        hrefs = [link['href'] for link in atags]
+        try:
+            # Get news URLs
+            search_url = f'https://news.google.com/rss/search?q={ticker}+stock+site:yahoo.com&ceid=US:en&hl=en-US&gl=US'
+            response = requests.get(search_url, headers=HEADERS, timeout=TIMEOUT)
+            response.raise_for_status()
+            
+            soup = BeautifulSoup(response.content, 'xml')
+            items = soup.find_all('item')
+            urls = [item.link.text for item in items][:num_articles]
 
-        # Clean URLs
-        exclude_list = ['maps', 'policies', 'preferences', 'accounts', 'support']
-        cleaned_urls = []
-        for url in hrefs:
-            if 'https://' in url and not any(exc in url for exc in exclude_list):
-                res = re.findall(r'(https?://\S+)', url)[0].split('&')[0]
-                cleaned_urls.append(res)
-        cleaned_urls = list(set(cleaned_urls))[:num_articles]
+            # Scrape articles with retries
+            articles = []
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            html_contents = loop.run_until_complete(scrape_articles(urls))
+            
+            for html in html_contents:
+                if html:
+                    article = clean_article_text(html)
+                    if article:
+                        articles.append(article)
 
-        # Scrape articles
-        articles = []
-        for url in cleaned_urls:
-            article_text = ""
-            try:
-                r = requests.get(url)
-                soup = BeautifulSoup(r.text, 'html.parser')
-                paragraphs = soup.find_all('p')
-                text = [p.text for p in paragraphs]
-                words = ' '.join(text).split(' ')[:350]
-                articles.append(' '.join(words))
-            except:
-                continue
+            # Summarization
+            summaries = []
+            for article in articles:
+                inputs = tokenizer(article, return_tensors="pt", truncation=True, max_length=512)
+                summary_ids = model.generate(
+                    inputs.input_ids,
+                    max_length=55,
+                    num_beams=5,
+                    early_stopping=True
+                )
+                summaries.append(tokenizer.decode(summary_ids[0], skip_special_tokens=True))
 
-        # Summarize articles
-        summaries = []
-        for article in articles:
-            input_ids = tokenizer.encode(article, return_tensors="pt")
-            output = model.generate(input_ids, max_length=55, num_beams=5, early_stopping=True)
-            summary = tokenizer.decode(output[0], skip_special_tokens=True)
-            summaries.append(summary)
+            # Sentiment analysis
+            scores = sentiment(summaries) if summaries else []
+            
+            return urls, articles, summaries, scores
 
-        # Sentiment analysis
-        scores = sentiment(summaries) if summaries else []
-
-    return cleaned_urls, articles, summaries, scores
+        except RequestException as e:
+            st.error(f"Network error: {str(e)}")
+            return [], [], [], []
+        except Exception as e:
+            st.error(f"Unexpected error: {str(e)}")
+            return [], [], [], []
 
 # Display results
 if analyze_button:
     urls, articles, summaries, scores = analyze_news(ticker)
     
     if not summaries:
-        st.warning("No articles found for this ticker")
+        st.warning("No articles found or error occurred. Try different ticker or check network.")
         st.stop()
 
     # Display results
-    st.success(f"Found {len(summaries)} articles for {ticker}")
+    st.success(f"Analyzed {len(summaries)} articles for {ticker}")
     
     # Create download data
     csv_data = [['Ticker','Summary', 'Sentiment', 'Sentiment Score', 'URL']]
     
     for i in range(len(summaries)):
-        with st.expander(f"Article {i+1}: {summaries[i][:50]}...", expanded=True):
+        with st.expander(f"Article {i+1}: {summaries[i][:50]}...", expanded=False):
             col1, col2 = st.columns([1, 4])
             
             with col1:
-                # Add image placeholder (you can implement actual image scraping)
                 st.image("https://via.placeholder.com/150", caption="Article Image")
                 st.caption(f"Source: {urls[i].split('//')[1].split('/')[0]}")
                 
