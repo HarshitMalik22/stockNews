@@ -1,7 +1,9 @@
-streamlit==1.42.0
-transformers==4.34.0
-beautifulsoup4==4.12.2
-requests==2.31.0
-torch==2.2.2
-lxml
-sentencepiece==0.1.97
+streamlit==1.32.2
+transformers==4.40.1
+torch==2.3.0
+beautifulsoup4==4.12.3
+requests==2.32.2
+newspaper3k==0.2.8
+urllib3==2.2.1
+lxml==5.2.1
+tqdm==4.66.2
