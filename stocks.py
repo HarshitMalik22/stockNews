@@ -40,7 +40,7 @@ with st.sidebar:
 @st.cache_resource
 def load_models():
     model_name = "human-centered-summarization/financial-summarization-pegasus"
-    # Ensure required backend (sentencepiece) is available
+    # Load Pegasus tokenizer (requires sentencepiece)
     tokenizer = PegasusTokenizer.from_pretrained(model_name)
     model = PegasusForConditionalGeneration.from_pretrained(model_name)
     sentiment_pipeline = pipeline("sentiment-analysis")
@@ -137,7 +137,6 @@ if analyze_button:
             col1, col2 = st.columns([1, 4])
             with col1:
                 st.image("https://via.placeholder.com/150", caption="Article Image")
-                # Extract domain name from URL
                 try:
                     domain = urls[i].split('//')[1].split('/')[0]
                 except Exception:
