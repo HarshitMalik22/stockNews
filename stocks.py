@@ -5,17 +5,13 @@ import requests
 import re
 import csv
 import time
-from requests.exceptions import RequestException
-import torch
-import asyncio
-import httpx  
 
 # Configuration
-HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                         'AppleWebKit/537.36 (KHTML, like Gecko) '
-                         'Chrome/91.0.4472.124 Safari/537.36'}
-TIMEOUT = 10
-MAX_RETRIES = 2
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+}
+TIMEOUT = 8
+MAX_ARTICLES = 20
 
 # Set up page config
 st.set_page_config(page_title="Stock News Analyzer", layout="wide")
@@ -26,109 +22,118 @@ st.markdown("""
 This app analyzes financial news for selected stocks using:
 - **Pegasus** for summarization
 - **Sentiment Analysis** pipeline
-- Optimized web scraping
+- Reliable news sources
 """)
 
 # Sidebar controls
 with st.sidebar:
     st.header("Settings")
-    ticker = st.text_input("Enter Stock Ticker", "ETH").upper()
+    ticker = st.text_input("Enter Stock Ticker", "AAPL").upper()
     num_articles = st.slider("Number of Articles", 1, 20, 5)
     analyze_button = st.button("Analyze News")
 
 # Load models with caching
 @st.cache_resource
 def load_models():
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model_name = "human-centered-summarization/financial-summarization-pegasus"
-    
     tokenizer = PegasusTokenizer.from_pretrained(model_name)
-    model = PegasusForConditionalGeneration.from_pretrained(model_name).to(device)
-    sentiment_pipeline = pipeline(
-        "sentiment-analysis",
-        model="distilbert-base-uncased-finetuned-sst-2-english",
-        device=0 if torch.cuda.is_available() else -1
-    )
+    model = PegasusForConditionalGeneration.from_pretrained(model_name)
+    sentiment_pipeline = pipeline("sentiment-analysis")
     return tokenizer, model, sentiment_pipeline
 
 tokenizer, model, sentiment = load_models()
 
-# Async functions using httpx
-async def fetch_url(client, url):
+def get_news_links(ticker):
+    """Get news links from Google News with better search parameters"""
     try:
-        response = await client.get(url, timeout=TIMEOUT, headers=HEADERS)
-        return response.text
+        url = f"https://news.google.com/search?q={ticker}%20stock&hl=en-US&gl=US&ceid=US%3Aen"
+        response = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        articles = soup.find_all('article')[:MAX_ARTICLES]
+        
+        urls = []
+        for article in articles:
+            link = article.find('a', href=True)
+            if link:
+                url = 'https://news.google.com' + link['href'].replace('./', '')
+                urls.append(url)
+        return urls[:num_articles]
+    
     except Exception as e:
-        st.error(f"Error fetching {url}: {str(e)}")
-        return None
+        st.error(f"News search failed: {str(e)}")
+        return []
 
-async def scrape_articles(urls):
-    async with httpx.AsyncClient() as client:
-        tasks = [fetch_url(client, url) for url in urls]
-        return await asyncio.gather(*tasks)
-
-def clean_article_text(text):
-    soup = BeautifulSoup(text, 'html.parser')
-    paragraphs = soup.find_all('p')
-    text = ' '.join([p.get_text(strip=True) for p in paragraphs])
-    return ' '.join(text.split()[:350])  # Limit to 350 words
+def fetch_article(url):
+    """Fetch article content with retries and error handling"""
+    for _ in range(2):
+        try:
+            response = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Try to find main article content
+            article = soup.find('article') or soup.find('div', class_=re.compile('content|body'))
+            if not article:
+                return None
+                
+            text = ' '.join([p.get_text() for p in article.find_all('p')])
+            return ' '.join(text.split()[:400])  # Limit to 400 words
+            
+        except Exception as e:
+            time.sleep(1)
+    
+    return None
 
 def analyze_news(ticker):
-    with st.status(f"Searching news for {ticker}..."):
-        try:
-            # Get news URLs
-            search_url = f'https://news.google.com/rss/search?q={ticker}+stock+site:yahoo.com&ceid=US:en&hl=en-US&gl=US'
-            response = requests.get(search_url, headers=HEADERS, timeout=TIMEOUT)
-            response.raise_for_status()
+    try:
+        with st.status(f"Searching news for {ticker}..."):
+            urls = get_news_links(ticker)
+            if not urls:
+                return [], [], [], []
             
-            soup = BeautifulSoup(response.content, 'xml')
-            items = soup.find_all('item')
-            urls = [item.link.text for item in items][:num_articles]
-
-            # Scrape articles with retries
             articles = []
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            html_contents = loop.run_until_complete(scrape_articles(urls))
+            for url in urls:
+                article = fetch_article(url)
+                if article:
+                    articles.append(article)
+                if len(articles) >= num_articles:
+                    break
             
-            for html in html_contents:
-                if html:
-                    article = clean_article_text(html)
-                    if article:
-                        articles.append(article)
-
             # Summarization
             summaries = []
             for article in articles:
                 inputs = tokenizer(article, return_tensors="pt", truncation=True, max_length=512)
                 summary_ids = model.generate(
                     inputs.input_ids,
-                    max_length=55,
+                    max_length=65,
                     num_beams=5,
                     early_stopping=True
                 )
                 summaries.append(tokenizer.decode(summary_ids[0], skip_special_tokens=True))
-
+            
             # Sentiment analysis
             scores = sentiment(summaries) if summaries else []
             
-            return urls, articles, summaries, scores
-
-        except RequestException as e:
-            st.error(f"Network error: {str(e)}")
-            return [], [], [], []
-        except Exception as e:
-            st.error(f"Unexpected error: {str(e)}")
-            return [], [], [], []
+            return urls[:len(articles)], articles, summaries, scores
+    
+    except Exception as e:
+        st.error(f"Analysis failed: {str(e)}")
+        return [], [], [], []
 
 # Display results
 if analyze_button:
     urls, articles, summaries, scores = analyze_news(ticker)
     
     if not summaries:
-        st.warning("No articles found or error occurred. Try a different ticker or check network.")
+        st.warning(f"No articles found for {ticker}. Try:")
+        st.markdown("- More common ticker (AAPL, TSLA, etc)")
+        st.markdown("- Check network connection")
+        st.markdown("- Try again later")
         st.stop()
 
+    # Display results
     st.success(f"Analyzed {len(summaries)} articles for {ticker}")
     
     # Create download data
