@@ -121,4 +121,3 @@ if analyze_button:
         file_name=f'{ticker}_news_analysis.csv',
         mime='text/csv'
     )
-"
