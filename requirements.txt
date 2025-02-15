@@ -4,4 +4,4 @@ beautifulsoup4>=4.12.2
 requests>=2.31.0
 torch>=1.12.1
 sentencepiece>=0.1.97
-aiohttp==3.8.5
+httpx==0.25.0
