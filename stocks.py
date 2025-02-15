@@ -17,7 +17,7 @@ HEADERS = {
 TIMEOUT = 8
 MAX_ARTICLES = 20
 
-# Set up page config
+# Set up page configuration
 st.set_page_config(page_title="Stock News Analyzer", layout="wide")
 
 # Title and description
@@ -40,7 +40,6 @@ with st.sidebar:
 @st.cache_resource
 def load_models():
     model_name = "human-centered-summarization/financial-summarization-pegasus"
-    # Load Pegasus tokenizer (requires sentencepiece)
     tokenizer = PegasusTokenizer.from_pretrained(model_name)
     model = PegasusForConditionalGeneration.from_pretrained(model_name)
     sentiment_pipeline = pipeline("sentiment-analysis")
@@ -54,7 +53,7 @@ def get_news_links(ticker):
         rss_url = f"https://news.google.com/rss/search?q={ticker}+stock&hl=en-US&gl=US&ceid=US:en"
         response = requests.get(rss_url, headers=HEADERS, timeout=TIMEOUT)
         response.raise_for_status()
-        # Use the 'xml' parser (requires lxml)
+        # Use the 'xml' parser; lxml must be installed.
         soup = BeautifulSoup(response.content, 'xml')
         items = soup.find_all('item')
         st.write(f"Debug: Found {len(items)} RSS items.")
@@ -65,13 +64,13 @@ def get_news_links(ticker):
         return []
 
 def fetch_article(url):
-    """Fetch article content with basic error handling and word limit."""
+    """Fetch article content with error handling and word limit."""
     for _ in range(2):
         try:
             response = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
-            # Attempt to locate the main article content
+            # Attempt to find the main article content
             article_tag = soup.find('article') or soup.find('div', class_=re.compile('content|body'))
             if not article_tag:
                 return None
@@ -96,7 +95,7 @@ def analyze_news(ticker):
                 if len(articles) >= num_articles:
                     break
             
-            # Summarization using Pegasus
+            # Summarize articles using Pegasus
             summaries = []
             for article in articles:
                 inputs = tokenizer(article, return_tensors="pt", truncation=True, max_length=512)
@@ -108,7 +107,7 @@ def analyze_news(ticker):
                 )
                 summaries.append(tokenizer.decode(summary_ids[0], skip_special_tokens=True))
             
-            # Sentiment analysis
+            # Perform sentiment analysis
             scores = sentiment(summaries) if summaries else []
             
             return urls[:len(articles)], articles, summaries, scores
@@ -116,21 +115,21 @@ def analyze_news(ticker):
         st.error(f"Analysis failed: {str(e)}")
         return [], [], [], []
 
-# Display results
+# Main execution and display of results
 if analyze_button:
     urls, articles, summaries, scores = analyze_news(ticker)
     
     if not summaries:
         st.warning(f"No articles found for {ticker}. Try:")
-        st.markdown("- Using a more common ticker (e.g. AAPL, TSLA, etc.)")
+        st.markdown("- Using a more common ticker (e.g., AAPL, TSLA, etc.)")
         st.markdown("- Checking your network connection")
         st.markdown("- Trying again later")
         st.stop()
 
     st.success(f"Analyzed {len(summaries)} articles for {ticker}")
     
-    # Create CSV download data
-    csv_data = [['Ticker','Summary', 'Sentiment', 'Sentiment Score', 'URL']]
+    # Prepare CSV data for download
+    csv_data = [['Ticker', 'Summary', 'Sentiment', 'Sentiment Score', 'URL']]
     
     for i in range(len(summaries)):
         with st.expander(f"Article {i+1}: {summaries[i][:50]}...", expanded=False):
