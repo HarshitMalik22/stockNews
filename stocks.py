@@ -40,6 +40,7 @@ with st.sidebar:
 @st.cache_resource
 def load_models():
     model_name = "human-centered-summarization/financial-summarization-pegasus"
+    # Ensure required backend (sentencepiece) is available
     tokenizer = PegasusTokenizer.from_pretrained(model_name)
     model = PegasusForConditionalGeneration.from_pretrained(model_name)
     sentiment_pipeline = pipeline("sentiment-analysis")
