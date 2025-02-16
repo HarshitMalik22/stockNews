@@ -3,8 +3,6 @@ from transformers import PegasusTokenizer, PegasusForConditionalGeneration, pipe
 from bs4 import BeautifulSoup
 import requests
 import re
-import csv
-import io
 
 # Set up page config
 st.set_page_config(page_title="Stock News Analyzer", layout="wide")
@@ -41,7 +39,7 @@ def analyze_news(ticker):
     # Search for news links
     with st.spinner(f"Searching news for {ticker}..."):
         search_url = f'https://www.google.com/search?q=yahoo+finance+{ticker}&tbm=nws'
-        # Add a User-Agent to avoid blocks or captchas
+        # Add a User-Agent to avoid potential blocks or captchas
         r = requests.get(search_url, headers={"User-Agent": "Mozilla/5.0"})
         soup = BeautifulSoup(r.text, 'html.parser')
         atags = soup.find_all('a')
@@ -54,7 +52,6 @@ def analyze_news(ticker):
             if 'https://' in url and not any(exc in url for exc in exclude_list):
                 matches = re.findall(r'(https?://\S+)', url)
                 if matches:
-                    # Grab only the first match and strip everything after &
                     res = matches[0].split('&')[0]
                     cleaned_urls.append(res)
 
@@ -64,14 +61,15 @@ def analyze_news(ticker):
         articles = []
         for url in cleaned_urls:
             try:
-                resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
-                soup = BeautifulSoup(resp.text, 'html.parser')
+                r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+                soup = BeautifulSoup(r.text, 'html.parser')
                 paragraphs = soup.find_all('p')
                 text = [p.text for p in paragraphs]
-                # Limit to ~350 words
+                # Limit to first ~350 words
                 words = ' '.join(text).split(' ')[:350]
                 articles.append(' '.join(words))
             except Exception as e:
+                # If scraping fails for any reason, skip this URL
                 print(f"Skipping {url} due to error: {e}")
                 continue
 
@@ -93,20 +91,16 @@ if analyze_button:
     urls, articles, summaries, scores = analyze_news(ticker)
     
     if not summaries:
-        st.warning("No articles found for this ticker.")
+        st.warning("No articles found for this ticker")
         st.stop()
 
     st.success(f"Found {len(summaries)} articles for {ticker}")
-
-    # We'll store all data in memory using csv.writer
-    csv_buffer = io.StringIO()
-    writer = csv.writer(csv_buffer, quoting=csv.QUOTE_MINIMAL)
-
-    # Write header row
-    writer.writerow(["Ticker", "Summary", "Sentiment", "Sentiment Score", "URL"])
-
+    
+    # Prepare CSV data
+    csv_data = [['Ticker','Summary', 'Sentiment', 'Sentiment Score', 'URL']]
+    
     for i in range(len(summaries)):
-        # Show a short preview in the expander label
+        # Short preview for the expander label
         preview_text = summaries[i][:50] + "..."
         with st.expander(f"Article {i+1}: {preview_text}", expanded=True):
             col1, col2 = st.columns([1, 4])
@@ -124,26 +118,18 @@ if analyze_button:
                 st.markdown(f"**URL:** [Link]({urls[i]})")
                 
                 if st.checkbox("Show full text", key=f"text_{i}"):
+                    # Show partial text to avoid flooding
                     st.write(articles[i][:1000] + "...")
+            
+            csv_data.append([ticker, summaries[i], scores[i]['label'], scores[i]['score'], urls[i]])
 
-        # Clean up summary to avoid newlines
-        clean_summary = summaries[i].replace('\n', ' ')
-        writer.writerow([
-            ticker,
-            clean_summary,
-            scores[i]['label'],
-            f"{scores[i]['score']:.2f}",
-            urls[i]
-        ])
-
-    # Convert CSV to string
-    csv_data = csv_buffer.getvalue()
-    csv_buffer.close()
-
+    # Create CSV string
+    csv_string = '\n'.join([','.join(map(str, row)) for row in csv_data])
+    
     # Download button
     st.download_button(
         label="Download Results as CSV",
-        data=csv_data,
+        data=csv_string,
         file_name=f'{ticker}_news_analysis.csv',
         mime='text/csv'
     )
